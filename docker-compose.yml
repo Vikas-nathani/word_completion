@@ -17,7 +17,7 @@ services:
     build: .
     container_name: backend
     ports:
-      - "8000:8000"
+      - "8004:8004"
     depends_on:
       - solr
     env_file:

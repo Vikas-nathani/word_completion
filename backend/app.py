@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import httpx
 import urllib.parse
 import re
@@ -753,6 +753,22 @@ app.add_middleware(
 # ─────────────────────────────────────────
 # ROUTES
 # ─────────────────────────────────────────
+async def _safe_solr_ping() -> tuple[dict, int]:
+    """Return Solr status without surfacing transport errors to callers."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{SOLR_URL}/admin/ping?wt=json", timeout=10)
+            resp.raise_for_status()
+            payload = resp.json()
+        return payload, 200
+    except httpx.HTTPError as exc:
+        return {
+            "status": "unavailable",
+            "error": str(exc),
+            "solr_url": SOLR_URL,
+        }, 503
+
+
 @app.get("/")
 async def root():
     return FileResponse("clinical_copilot_ui.html")
@@ -760,21 +776,21 @@ async def root():
 
 @app.get("/health")
 async def health():
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{SOLR_URL}/admin/ping?wt=json", timeout=10)
-        solr_status = resp.json().get("status", "unknown")
-    return {
+    solr_payload, solr_code = await _safe_solr_ping()
+    response = {
         "api": "ok",
-        "solr": solr_status,
+        "solr": solr_payload.get("status", "unknown"),
         "solr_url": SOLR_URL,
     }
+    if solr_code != 200:
+        response["solr_details"] = solr_payload
+    return response
 
 
 @app.get("/solr/ping")
 async def solr_ping():
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{SOLR_URL}/admin/ping?wt=json", timeout=10)
-        return resp.json()
+    payload, status_code = await _safe_solr_ping()
+    return JSONResponse(content=payload, status_code=status_code)
 
 
 @app.get("/solr/select")
@@ -1019,4 +1035,4 @@ from backend.api.router import router as note_router
 app.include_router(note_router)
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.app:app", host="0.0.0.0", port=8004, reload=True)

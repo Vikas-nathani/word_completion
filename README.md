@@ -142,7 +142,7 @@ Important variables:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload
+uvicorn backend.app:app --host 0.0.0.0 --port 8004 --reload
 ```
 
 Prerequisite: a running Solr instance with `umls_core` available.
@@ -156,12 +156,12 @@ docker compose up --build
 This starts:
 
 - `solr` on `8983`
-- `backend` on `8000`
+- `backend` on `8004`
 
 Then open:
 
-- API docs: `http://localhost:8000/docs`
-- UI page: `http://localhost:8000/`
+- API docs: `http://localhost:8004/docs`
+- UI page: `http://localhost:8004/`
 
 ### Development Override (Optional)
 
@@ -176,13 +176,13 @@ docker compose -f docker-compose.yml -f infra/docker-compose.dev.yml up --build
 ### Section-Aware Completion
 
 ```bash
-curl "http://localhost:8000/api/note/complete?q=diab&section=diagnosis&rows=10"
+curl "http://localhost:8004/api/note/complete?q=diab&section=diagnosis&rows=10"
 ```
 
 ### Context-Aware Completion (JSON body)
 
 ```bash
-curl -X POST "http://localhost:8000/api/note/complete/context" \
+curl -X POST "http://localhost:8004/api/note/complete/context" \
   -H "Content-Type: application/json" \
   -d '{
     "q": "met",
@@ -198,7 +198,7 @@ curl -X POST "http://localhost:8000/api/note/complete/context" \
 ### List Valid Sections
 
 ```bash
-curl "http://localhost:8000/api/note/sections"
+curl "http://localhost:8004/api/note/sections"
 ```
 
 ## Testing
@@ -214,6 +214,14 @@ Tests cover section validation, response shape, fuzzy fallback, and ranking/filt
 ## Data and Indexing Utilities
 
 The `scripts/` directory contains helper scripts for Solr data preparation and index updates (for example source/TTY priority updates and word-count enrichments). These scripts are useful when rebuilding or tuning the search index.
+
+For a quick section vocabulary audit, run:
+
+```bash
+python3 scripts/audit_section_terms.py --limit 500 --output reports/section_term_audit.json
+```
+
+The script samples section-specific terms from the repo's clinical JSON files, checks whether Solr contains them, and prints a length summary for each section.
 
 ## Operational Notes
 
