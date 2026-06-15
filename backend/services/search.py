@@ -67,9 +67,6 @@ async def note_complete(
         ],
         "fq": fq_list,
     }
-    print("DEBUG FQ:", fq_list)
-    print("DEBUG QUERY:", parsed)
-
     async with httpx.AsyncClient() as client:
         docs, solr_num_found, _ = await legacy_app._fetch_filtered_docs(
             client=client,
