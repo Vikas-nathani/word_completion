@@ -14,9 +14,14 @@ from httpx import ASGITransport, AsyncClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from backend import app
+from backend.app import app as fastapi_app
 from backend.models.models import NoteCompleteResult
 from backend.services.section_config import SECTION_SEMANTIC_TYPES
+
+
+@pytest.fixture
+def app():
+    return fastapi_app
 
 
 @pytest.mark.anyio

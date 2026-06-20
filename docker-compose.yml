@@ -13,6 +13,14 @@ services:
       - solr-precreate
       - umls_core
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6390:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+
   backend:
     build: .
     container_name: backend
@@ -20,5 +28,8 @@ services:
       - "8004:8004"
     depends_on:
       - solr
+      - redis
     env_file:
       - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0

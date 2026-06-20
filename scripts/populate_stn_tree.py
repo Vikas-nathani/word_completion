@@ -1,3 +1,4 @@
+import os
 import psycopg2
 import mysql.connector
 
@@ -5,11 +6,11 @@ import mysql.connector
 # CONFIG
 # ─────────────────────────────────────────
 PG_CONFIG = {
-    "host":     "localhost",
-    "port":     5432,
-    "dbname":   "umls_db",
-    "user":     "postgres",
-    "password": "vikas",
+    "host":     os.getenv("PG_HOST", "localhost"),
+    "port":     int(os.getenv("PG_PORT", "5432")),
+    "dbname":   os.getenv("PG_DBNAME", "umls_db"),
+    "user":     os.getenv("PG_USER", "postgres"),
+    "password": os.getenv("PG_PASSWORD", ""),
 }
 
 MYSQL_CONFIG = {

@@ -40,9 +40,13 @@ async def note_complete(
     del source, tty
 
     fq_list = [
-        "tty:(" + " OR ".join(legacy_app.ALLOWED_TTY) + ")",
-        legacy_app.TERM_WORD_COUNT_FQ,
-        get_section_fq(section),
+        fq for fq in (
+            # Note suggestions surface preferred terms and synonyms (PT, PN, SY)
+            # but not fully-specified names or abbreviation atoms (FN, AB).
+            "tty:(PT OR PN OR SY)",
+            legacy_app.TERM_WORD_COUNT_FQ,
+            get_section_fq(section),
+        ) if fq is not None
     ]
 
     if section in CHV_EXCLUDED_SECTIONS or section == "procedures":
@@ -58,10 +62,33 @@ async def note_complete(
         fq_list.append('-semantic_type:"Biologically Active Substance"')
 
     effective_query_text = legacy_app._effective_query_text_for_ranking(q)
+    # Sort order:
+    #   1. term_word_count        fewest words first
+    #   2. preferred tier         PT/PN (preferred terms) above SY (synonyms), so
+    #                             cryptic short abbreviations stored as SY do not
+    #                             outrank concise preferred terms for short
+    #                             prefixes (e.g. "Fall" beats "Fy" for q="f").
+    #                             Implemented as map(tty_priority,1,2,0,1): PT=1
+    #                             and PN=2 map to tier 0, everything else tier 1.
+    #   3. term_length            shortest completion first within a tier, so
+    #                             "Diabetes" beats "Diabulimia" for q="diab".
+    #   4. tty_priority           PT before PN within the preferred tier.
+    #   5. source_priority        best clinical source as the final tiebreaker.
+    #
+    # We deliberately do NOT use a query() score boost: term_lower is a tokenized
+    # prefix field, so query("term_lower:f") scores by relevance and rewards long
+    # phrases that repeat the prefix, which (as the primary key) pushes concise
+    # terms out of the fetch window for small `rows`, producing rows-dependent
+    # ordering. A fully-typed long term still surfaces without a boost because it
+    # matches very few docs and is therefore always inside the fetch window.
+    relevance_sort = (
+        "term_word_count asc, map(tty_priority,1,2,0,1) asc, term_length asc, "
+        "tty_priority asc, source_priority asc"
+    )
     parsed = {
         "q": [legacy_app._build_autocomplete_query(q)],
         "wt": ["json"],
-        "sort": [legacy_app._prefetch_sort_for_query(legacy_app._extract_query_text(effective_query_text))],
+        "sort": [relevance_sort],
         "fl": [
             "id,term,tty,tty_priority,semantic_type,source,source_priority,code,concept_id,is_abbreviation,stn_path,parent_stn,parent_stn_id,depth_level,term_word_count,term_length"
         ],

@@ -21,10 +21,13 @@ In clinical documentation workflows, free typing can be slow and inconsistent. T
 ## Core Capabilities
 
 - Fast autocomplete over medical terms indexed in Solr
+- Two-layer result cache (in-process LRU + Redis) for sub-millisecond repeated queries
 - Semantic filtering by note section (`chief_complaint`, `diagnosis`, `investigations`, `medications`, `procedures`, `advice`)
 - Query normalization and abbreviation expansion (for example `mi` -> `myocardial infarction`)
+- Improved ranking: preferred terms (PT/PN) rank above synonyms/abbreviations (SY/FN/AB) so concise terms surface before cryptic short abbreviations
 - Fuzzy fallback when exact/prefix matches are empty
 - Context boosting from parsed patient summary text or JSON
+- Multi-word suggestion replacement in the UI — selecting a suggestion replaces the entire typed prefix, not just the last word
 - API-first design with typed request/response models (Pydantic)
 
 ## High-Level Architecture
@@ -39,6 +42,9 @@ FastAPI (backend.app + backend.api.router)
   |-- Section rules (backend.services.section_config)
   |-- Context parser (backend.services.context_parser)
   |-- Search service (backend.services.search)
+  |-- Two-layer cache (backend.core.cache)
+  |     |-- Layer 1: in-process LRU  (~0ms, per worker)
+  |     +-- Layer 2: Redis            (~1ms, shared across workers)
   |
   v
 Apache Solr (umls_core)
@@ -65,10 +71,11 @@ Apache Solr (umls_core)
 
 - Language: Python 3.10+
 - API framework: FastAPI
-- ASGI server: Uvicorn
+- ASGI server: Uvicorn (4 workers in Docker)
 - HTTP client: httpx
 - Validation/models: Pydantic v2
 - Search engine: Apache Solr 9 (`umls_core`)
+- Cache: in-process LRU (OrderedDict) + Redis 7
 - Containerization: Docker + Docker Compose
 - Testing: pytest + httpx ASGI transport
 
@@ -81,6 +88,7 @@ backend/
   app.py                  # Main FastAPI app, Solr integration, ranking/filter logic
   api/router.py           # Section-aware + context-aware note APIs
   core/config.py          # Environment-driven runtime configuration
+  core/cache.py           # Two-layer cache (LRU + Redis)
   models/models.py        # Request/response models and validation
   services/search.py      # Section-aware query pipeline
   services/context_parser.py
@@ -103,8 +111,10 @@ clinical_copilot_ui.html  # Basic UI served at `/`
 - `GET /health` -> API/Solr health snapshot
 - `GET /solr/ping` -> Solr ping passthrough
 - `GET /solr/select` -> Solr select wrapper with autocomplete-oriented rewrite/filtering
-- `GET /search` -> generic search endpoint with optional filters
+- `GET /search` -> generic search endpoint with optional filters (results cached)
 - `GET /stats` -> index stats/facets
+- `GET /cache/stats` -> LRU and Redis cache hit/miss statistics
+- `POST /cache/clear` -> flush LRU and Redis caches
 
 ### Note Completion Endpoints
 
@@ -129,8 +139,11 @@ Important variables:
 - `NOTE_API_DEFAULT_ROWS` (default: `15`)
 - `NOTE_API_MAX_ROWS` (default: `50`)
 - `NOTE_API_VERSION` (default: `1.0.0`)
-- `NOTE_API_VALID_SECTIONS`
-  - Comma-separated override for valid sections.
+- `NOTE_API_VALID_SECTIONS` — comma-separated override for valid sections
+- `REDIS_URL` (default: `redis://localhost:6379/0`) — set to `redis://redis:6379/0` in Docker Compose
+- `CACHE_LRU_MAX_SIZE` (default: `10000`) — set to `0` to disable the in-process LRU
+- `CACHE_LRU_TTL_SEC` (default: `3600`)
+- `CACHE_REDIS_TTL_SEC` (default: `3600`) — set to `0` to disable Redis caching
 
 `docker-compose.yml` expects a `.env` file for backend environment injection.
 
@@ -156,7 +169,8 @@ docker compose up --build
 This starts:
 
 - `solr` on `8983`
-- `backend` on `8004`
+- `redis` on `6390` (mapped from container port `6379`)
+- `backend` on `8004` (4 Uvicorn workers)
 
 Then open:
 
@@ -223,11 +237,27 @@ python3 scripts/audit_section_terms.py --limit 500 --output reports/section_term
 
 The script samples section-specific terms from the repo's clinical JSON files, checks whether Solr contains them, and prints a length summary for each section.
 
+## Ranking
+
+Results are ordered by a strict priority key:
+
+1. **Relevance bucket** — exact match > starts-with > contains
+2. **Term word count** — fewer words first (single-word beats multi-word)
+3. **Preferred tier** — PT/PN (preferred terms) above SY/FN/AB, so cryptic short abbreviations do not outrank concise preferred terms for short prefixes
+4. **Term length proximity** — shortest completion of the typed prefix first within a tier
+5. **TTY priority** — PT before PN as a tiebreaker within the preferred tier
+6. **Semantic type priority** — Disease > Finding > Organic Chemical
+7. **Source priority** — SNOMEDCT_US > ICD10CM > NCI > ... > CHV
+
+`MAX_WORDS` no longer imposes a hard upper bound on term word count. Short terms still appear first because both the Solr fetch sort and the Python re-rank order by word count ascending.
+
 ## Operational Notes
 
 - The API includes CORS middleware configured with permissive defaults.
 - The backend relies on Solr availability for autocomplete/search endpoints.
 - Request resilience includes guarded fallbacks and service-unavailable responses for upstream failures.
+- The `/search` endpoint caches plain prefix queries in a two-layer cache (LRU + Redis). Extra filters (`semantic_type`, `source`, `is_abbreviation`) bypass the cache. Use `GET /cache/stats` to inspect hit rates and `POST /cache/clear` to flush both layers.
+- Redis is a soft dependency. If Redis is unreachable at startup, the backend falls back gracefully to Solr with only the in-process LRU active.
 
 ## Compatibility
 

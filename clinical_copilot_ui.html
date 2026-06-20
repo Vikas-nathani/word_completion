@@ -1731,24 +1731,60 @@
     replaceCurrentWordInNote(selected.term, editor);
   }
 
+  // Find where the already-typed prefix of `replacement` begins, walking back
+  // from the current word over earlier words too. This lets a multi-word
+  // suggestion replace the whole typed phrase prefix instead of only the last
+  // word (which would otherwise duplicate the prefix). Returns the furthest-left
+  // word boundary at/left-of the current word where the typed text is still a
+  // (whitespace-insensitive, case-insensitive) prefix of the replacement. Falls
+  // back to the single current word when the suggestion is not a continuation.
+  function getReplacementStartInNote(text, context, replacement) {
+    const norm = (s) => s.replace(/\s+/g, ' ').toLowerCase();
+    const replLower = norm(replacement);
+
+    // Candidate start positions: the current word start, then each earlier
+    // word start moving left.
+    const candidates = [context.start];
+    let scan = context.start;
+    while (scan > 0) {
+      const preceding = text.slice(0, scan);
+      const match = preceding.match(/[A-Za-z0-9'_-]+\s*$/);
+      if (!match) break;
+      scan = scan - match[0].length;
+      candidates.push(scan);
+    }
+
+    // Keep the furthest-left candidate whose typed text is a prefix of the
+    // replacement (candidates are ordered current-word-first, then leftward).
+    let best = context.start;
+    for (const candidate of candidates) {
+      const typed = norm(text.slice(candidate, context.end));
+      if (replLower.startsWith(typed)) {
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
   function replaceCurrentWordInNote(replacement, editor) {
     const text = editor.textarea.value;
     const context = getCurrentWordContext(editor);
     if (!context) return;
 
-    const before = text.slice(0, context.start);
+    const start = getReplacementStartInNote(text, context, replacement);
+    const before = text.slice(0, start);
     const after = text.slice(context.end);
     editor.textarea.value = `${before}${replacement}${after}`;
 
-    const newCursor = context.start + replacement.length;
+    const newCursor = start + replacement.length;
     editor.textarea.setSelectionRange(newCursor, newCursor);
     editor.textarea.focus();
 
     hideNoteGhostCompletion(editor);
     hideNoteDropdown(editor);
     editor.currentWord = replacement;
-    editor.wordStart = context.start;
-    editor.wordEnd = context.start + replacement.length;
+    editor.wordStart = start;
+    editor.wordEnd = start + replacement.length;
   }
 
   function getCurrentWordContext(editor) {

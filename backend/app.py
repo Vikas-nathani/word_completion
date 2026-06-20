@@ -18,10 +18,17 @@ load_dotenv()  # loads .env from current working directory
 ALLOWED_TTY = ["PT", "PN", "SY", "FN", "AB"]
 # Include docs missing term_word_count so base reindex remains searchable
 # before post-processing scripts populate derived fields.
-MAX_WORDS = 3
+# MAX_WORDS = None removes the upper bound on term word count so terms of any
+# length can be returned. Short terms still appear first because both the Solr
+# prefetch sort and _rerank_docs order by term_word_count ascending; the
+# shortest matches therefore fill the fetch window before longer ones. Set
+# MAX_WORDS to an integer to re-enable an upper bound.
+MAX_WORDS = None
 MIN_SOLR_FETCH_ROWS = 200
 MAX_SOLR_FETCH_ROWS = 400
-TERM_WORD_COUNT_FQ = f"(term_word_count:[1 TO {MAX_WORDS}] )"
+TERM_WORD_COUNT_FQ = (
+    f"(term_word_count:[1 TO {MAX_WORDS}] )" if MAX_WORDS is not None else None
+)
 
 BLOCKED_SEMANTIC_TYPES = {
     # Hormone-related types are intentionally not globally blocked here;
@@ -215,7 +222,10 @@ def _build_autocomplete_query(raw_q: str) -> str:
     if not text:
         return "*:*"
 
-    tokens = [_escape_solr_token(token) for token in text.split(" ") if token]
+    # Use _tokenize_words so punctuation (:, /, (, ), [, ], etc.) is stripped
+    # before building field queries — passing escaped punctuation inside a
+    # term_lower: value produces a Solr 400.
+    tokens = _tokenize_words(text)
     if not tokens:
         return "*:*"
 
@@ -225,7 +235,7 @@ def _build_autocomplete_query(raw_q: str) -> str:
     if not expansion:
         return base_query
 
-    expanded_tokens = [_escape_solr_token(token) for token in expansion.lower().split(" ") if token]
+    expanded_tokens = _tokenize_words(expansion.lower())
     if not expanded_tokens:
         return base_query
 
@@ -364,6 +374,18 @@ def _tty_priority_value(doc: dict) -> int:
     return _safe_int(_get_scalar(doc, "tty_priority", 6), 6)
 
 
+def _preferred_tier_value(doc: dict) -> int:
+    """Tier preferred terms above synonyms/abbreviations.
+
+    PT and PN (preferred terms) are tier 0; everything else (SY, FN, AB) is tier
+    1. Ranking by this tier before term length keeps cryptic short abbreviations
+    (stored as SY) from outranking concise preferred terms for short prefixes,
+    while still ordering by length within each tier. Mirrors the Solr sort
+    map(tty_priority,1,2,0,1) used by note_complete.
+    """
+    return 0 if _tty_priority_value(doc) <= 2 else 1
+
+
 def _source_priority_value(doc: dict) -> int:
     source = str(_get_scalar(doc, "source", "")).upper()
     if source in SOURCE_PRIORITY_MAP:
@@ -395,11 +417,16 @@ def _deduplicate_by_concept_id(docs: list[dict]) -> list[dict]:
             # beats "Hypertension resolved" (SNOMEDCT_US, 2 words) as the
             # concept representative shown to the doctor.
             _word_count(term),
-            # TTY and source priority second — among equal word count terms,
-            # best clinical source wins.
+            # Preferred tier next — PT/PN representative beats a SY synonym.
+            _preferred_tier_value(doc),
+            # Length before tty/source so the shortest preferred term is the
+            # concept representative, e.g. "Cough" beats "Coughing" for concept
+            # C0010200 instead of the longer atom.
+            len(term),
+            # TTY then source priority only as tiebreakers among equal-length
+            # terms within the same tier.
             _tty_priority_value(doc),
             _source_priority_value(doc),
-            len(term),
             0 if term and term[0].isupper() else 1,
             term,
         )
@@ -515,14 +542,20 @@ def _rerank_docs(docs: list[dict], query_text: str) -> list[dict]:
     Sort key priority (strict order):
     1. relevance_bucket     — exact match > starts-with > contains
     2. term_word_count      — fewer words first (1-word beats 2-word)
-    3. tty_priority         — PT > PN > SY > FN > AB
-    4. semantic_type_priority — Disease > Finding > Organic Chemical
-    5. source_priority      — SNOMEDCT_US > ICD10CM > NCI > ... > CHV
-    6. term_length_proximity — shorter completion of the typed prefix first
-                               replaces alphabetical which had no clinical meaning
-                               proximity = term_length - len(query)
-                               Hypertension(12) - hypert(6) = 6 beats
-                               Hypertrichosis(14) - hypert(6) = 8
+    3. preferred_tier       — PT/PN (preferred terms) above SY/FN/AB, so cryptic
+                               short abbreviations stored as SY do not outrank
+                               concise preferred terms ("Fall" beats "Fy" for "f")
+    4. term_length_proximity — shorter completion first within a tier, so
+                               "Diabetes" beats "Diabulimia" for "diab".
+                               proximity = term_length - len(query).
+    5. tty_priority         — PT before PN within the preferred tier (tiebreaker)
+    6. semantic_type_priority — Disease > Finding > Organic Chemical (tiebreaker)
+    7. source_priority      — SNOMEDCT_US > ICD10CM > NCI > ... > CHV (tiebreaker)
+
+    This order matches the Solr sort used by note_complete
+    (term_word_count, map(tty_priority,1,2,0,1), term_length, tty_priority,
+    source_priority) so the final Python re-rank does not contradict the order of
+    the fetched window.
     """
     normalized_query = _normalize_whitespace(query_text).lower()
     tokens = _tokenize_words(normalized_query)
@@ -533,14 +566,15 @@ def _rerank_docs(docs: list[dict], query_text: str) -> list[dict]:
         key=lambda doc: (
             _relevance_bucket(str(_get_scalar(doc, "term", "")), normalized_query, tokens),
             _safe_int(_get_scalar(doc, "term_word_count", _word_count(str(_get_scalar(doc, "term", "")))), 999),
+            _preferred_tier_value(doc),
+            # Term length proximity: how many chars remain to complete the prefix.
+            # Smaller = shorter completion = more likely what the doctor is typing.
+            # Below the preferred tier so a preferred term wins over a synonym,
+            # then the shortest completion wins within the tier.
+            _safe_int(_get_scalar(doc, "term_length", len(_normalize_whitespace(str(_get_scalar(doc, "term", ""))))), 9999) - query_len,
             _tty_priority_value(doc),
             _semantic_type_priority_value(doc),
             _source_priority_value(doc),
-            # Term length proximity: how many chars remain to complete the prefix.
-            # Smaller = shorter completion = more likely what the doctor is typing.
-            # Source priority above this ensures SNOMEDCT_US always beats CHV/MDR
-            # before proximity is even considered.
-            _safe_int(_get_scalar(doc, "term_length", len(_normalize_whitespace(str(_get_scalar(doc, "term", ""))))), 9999) - query_len,
         ),
     )
 
@@ -710,9 +744,11 @@ async def _fuzzy_search_fallback(
         "fl": [fl_value],
         "sort": ["score desc, tty_priority asc, source_priority asc"],
         "fq": [
-            "tty:(" + " OR ".join(ALLOWED_TTY) + ")",
-            TERM_WORD_COUNT_FQ,
-            BLOCKED_SEMANTIC_TYPES_FQ,
+            fq for fq in (
+                "tty:(" + " OR ".join(ALLOWED_TTY) + ")",
+                TERM_WORD_COUNT_FQ,
+                BLOCKED_SEMANTIC_TYPES_FQ,
+            ) if fq is not None
         ],
     }
 
@@ -813,7 +849,7 @@ async def solr_select(request: Request):
         fq_list.append(tty_filter)
 
     term_word_count_fq = TERM_WORD_COUNT_FQ
-    if term_word_count_fq not in fq_list:
+    if term_word_count_fq is not None and term_word_count_fq not in fq_list:
         fq_list.append(term_word_count_fq)
 
     if BLOCKED_SEMANTIC_TYPES_FQ not in fq_list:
@@ -890,6 +926,17 @@ async def solr_select(request: Request):
     return data
 
 
+@app.get("/cache/stats")
+async def cache_stats():
+    return lru_cache.stats()
+
+
+@app.post("/cache/clear")
+async def cache_clear():
+    lru_cache.clear()
+    return {"cleared": True}
+
+
 @app.get("/search")
 async def search(
     q: str = Query(..., description="Search prefix"),
@@ -902,10 +949,22 @@ async def search(
     start_ts = time.perf_counter()
     spell_corrected = False
 
+    # Only cache plain prefix queries — skip when extra filters are applied
+    # since those are rare and caching them wastes slots.
+    use_cache = not any([semantic_type, source, is_abbreviation is not None])
+    normalized_q = _normalize_whitespace(q).lower()
+
+    if use_cache:
+        cached = lru_cache.get(normalized_q, rows)
+        if cached is not None:
+            return {**cached, "cache": "hit"}
+
     fq_list = [
-        "tty:(" + " OR ".join(ALLOWED_TTY) + ")",
-        TERM_WORD_COUNT_FQ,
-        BLOCKED_SEMANTIC_TYPES_FQ,
+        fq for fq in (
+            "tty:(" + " OR ".join(ALLOWED_TTY) + ")",
+            TERM_WORD_COUNT_FQ,
+            BLOCKED_SEMANTIC_TYPES_FQ,
+        ) if fq is not None
     ]
 
     if semantic_type:
@@ -991,14 +1050,20 @@ async def search(
     except Exception:
         pass
 
-    return {
+    response = {
         "total": len(ranked_docs),
         "start": start,
         "rows": rows,
         "results": results,
         "query_time_ms": qtime_total,
         "spell_corrected": spell_corrected,
+        "cache": "miss",
     }
+
+    if use_cache:
+        lru_cache.set(normalized_q, rows, response)
+
+    return response
 
 
 @app.get("/stats")
@@ -1031,6 +1096,7 @@ async def stats():
         "top_semantic_types": sem_types,
     }
 
+from backend.core.cache import lru_cache
 from backend.api.router import router as note_router
 app.include_router(note_router)
 if __name__ == "__main__":

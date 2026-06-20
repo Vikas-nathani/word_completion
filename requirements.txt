@@ -8,3 +8,4 @@ psycopg2-binary>=2.9.9
 pytest>=8.3.0
 anyio>=4.4.0
 python-multipart
+redis>=5.0.0
