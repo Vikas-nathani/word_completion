@@ -107,6 +107,11 @@ while True:
          term_id, concept_id, semantic_type, stn,
          source, code) = row
 
+        # Skip terms containing @ — ICD10PCS hierarchy paths, gene locus symbols,
+        # and other @ notation are unreachable by prefix search in normal clinical use
+        if term_lower and '@' in term_lower:
+            continue
+
         # Lookup stn_id from map
         stn_id = stn_id_map.get(stn) if stn else None
         if stn_id is None:

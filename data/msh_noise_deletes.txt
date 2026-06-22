@@ -1,0 +1,99 @@
+# MSH noise cleanup — delete queries
+# Source: MSH (784,956 docs before cleanup)
+# Estimated docs removed: ~709,779
+# Estimated MSH after: ~75,177
+# Date: 2026-06-22
+#
+# All removed types are pure research/biochemistry/taxonomy noise —
+# no OPD doctor would search these in an autocomplete box.
+# Clinical terms from MSH (Disease or Syndrome, Therapeutic or Preventive
+# Procedure, Diagnostic Procedure, etc.) are preserved.
+# Any real drug/vaccine names in the removed types exist in RXNORM/SNOMEDCT_US
+# at higher source priority, so they are not lost from the index.
+#
+# HOW TO RUN:
+#   curl -X POST 'http://localhost:8983/solr/umls_core/update?commit=true' \
+#        -H 'Content-Type: application/json' \
+#        --data-binary @msh_noise_deletes.txt
+#
+# Or run one line at a time (replace commit=false with commit=true on last one):
+#   curl -X POST 'http://localhost:8983/solr/umls_core/update' \
+#        -H 'Content-Type: application/json' \
+#        -d '<query here>'
+# Then commit: curl '...?commit=true'
+# ─────────────────────────────────────────────────────────────────────
+
+# --- Pure chemistry — IUPAC strings, chemical compound codes (213,172 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Organic Chemical\""}}
+
+# --- Species-tagged research proteins: mouse/rat/Xenopus/Drosophila entries (167,749 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Amino Acid, Peptide, or Protein\""}}
+
+# --- Species-tagged biologically active proteins — same pattern (82,591 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Biologically Active Substance\""}}
+
+# --- Research compound codes: YM553, B-10610, IUPAC drug strings — zero recognizable OPD drug names in 50-sample (74,661 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Pharmacologic Substance\""}}
+
+# --- Mycology taxonomy: Davidiella populorum, Orbilia decipiens, etc. (61,383 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Fungus\""}}
+
+# --- Biochemistry enzymes: species-tagged, butterfly CYPs, etc. (34,244 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Enzyme\""}}
+
+# --- Lichen/plant taxonomy: Bacidina chloroticula, Lecanora subradians (3,983 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Plant\""}}
+
+# --- Molecular biology: microRNA mouse/Drosophila, modified nucleosides (16,172 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Nucleic Acid, Nucleoside, or Nucleotide\""}}
+
+# --- Bacterial taxonomy: Streptomyces spp., Paraburkholderia spp. (15,507 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Bacterium\""}}
+
+# --- Lab reagents and research diagnostics: DNA-Sephadex, TRITC-RCA I (6,731 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Indicator, Reagent, or Diagnostic Aid\""}}
+
+# --- Species-tagged antigens and immunology research proteins (8,547 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Immunologic Factor\""}}
+
+# --- Species-tagged receptors: Xenopus, mouse, rat receptor proteins (8,308 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Receptor\""}}
+
+# --- Inorganic chemistry: Ru(BAP)OB(PF6)2, cobalt carbide, NSC codes (3,928 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Inorganic Chemical\""}}
+
+# --- Mammal zoology taxonomy (1,541 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Mammal\""}}
+
+# --- Species-tagged hormones and insect growth regulators (1,403 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Hormone\""}}
+
+# --- Eukaryote taxonomy: insects, arachnids, Drosophila spp. (1,378 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Eukaryote\""}}
+
+# --- Toxicology research compounds — not poisoning diagnoses (3,603 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Hazardous or Poisonous Substance\""}}
+
+# --- Antibiotic research compounds: obscure codes, IUPAC strings (2,850 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Antibiotic\""}}
+
+# --- Gene entries: T-Cell Receptor gamma Genes, Genome, Helminth (624 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Gene or Genome\""}}
+
+# --- Reptile taxonomy (630 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Reptile\""}}
+
+# --- Structural biology sequence concepts (194 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Amino Acid Sequence\""}}
+
+# --- Fish taxonomy (264 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Fish\""}}
+
+# --- Molecular biology sequence notation (123 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Nucleotide Sequence\""}}
+
+# --- Amphibian taxonomy (111 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Amphibian\""}}
+
+# --- Bird taxonomy (82 docs)
+{"delete":{"query":"source:MSH AND semantic_type:\"Bird\""}}
